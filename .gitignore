@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+dataset/
+raw_dataset/
+training_performance.png
+confusion_matrix.png
