@@ -24,20 +24,27 @@ else:
 CLASS_NAMES = ['blackspot', 'healthy', 'mildew', 'rust']
 
 def check_image_quality(image: Image.Image):
+    """
+    Feature 1: Image Quality Assessment
+    Checks for blur, extreme darkness/brightness, and plant foliage presence.
+    """
     open_cv_image = np.array(image.convert('RGB'))
     img_bgr = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
+    # 1. Blur Detection
     laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
     if laplacian_var < 20.0:
         return False, "Image is too blurry. Please hold camera steady."
 
+    # 2. Brightness Check
     mean_brightness = np.mean(gray)
     if mean_brightness < 30:
         return False, "Image is too dark. Please take photo in good lighting."
     if mean_brightness > 235:
         return False, "Image is overexposed/too bright."
 
+    # 3. Plant Foliage Check in HSV
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     plant_mask = ((hsv[:, :, 0] >= 15) & (hsv[:, :, 0] <= 115) & (hsv[:, :, 1] >= 25) & (hsv[:, :, 2] >= 25))
     plant_ratio = np.sum(plant_mask) / (hsv.shape[0] * hsv.shape[1])
@@ -54,17 +61,12 @@ def preprocess_image(image: Image.Image):
     img_array = np.expand_dims(img_array, axis=0)
     return img_array
 
-def pil_to_base64(image: Image.Image):
-    """Converts PIL image to base64 string for Android display"""
-    buffer = io.BytesIO()
-    image.save(buffer, format="JPEG", quality=85)
-    return base64.b64encode(buffer.getvalue()).decode('utf-8')
-
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
         "status": "Online",
-        "service": "Adaptive Rose Disease Detection & Smart Advisor API"
+        "service": "Adaptive Rose Disease Detection & Smart Advisor API",
+        "version": "2.0 (Severity-Adaptive + Leaf Segmentation)"
     })
 
 @app.route('/predict', methods=['POST'])
@@ -79,7 +81,9 @@ def predict():
     try:
         raw_image = Image.open(file.stream)
 
-        # Stage 0: Quality Check
+        # -------------------------------------------------------------
+        # Stage 0: Image Quality Check (Blur, Darkness, Non-Plant)
+        # -------------------------------------------------------------
         is_quality_good, quality_msg = check_image_quality(raw_image)
         if not is_quality_good:
             return jsonify({
@@ -87,7 +91,6 @@ def predict():
                 "confidence": "0.00%",
                 "status": "Image Quality Warning",
                 "severity": "N/A",
-                "segmented_image_base64": None,
                 "description": quality_msg,
                 "fertilizer_recommendation": "N/A - Please recapture with better lighting and focus.",
                 "preventive_measures": [
@@ -97,25 +100,27 @@ def predict():
                 ]
             }), 200
 
-        # Stage 1: Leaf Segmentation & Severity
+        # -------------------------------------------------------------
+        # Stage 1: Automatic Leaf Segmentation & Severity Area Calc
+        # -------------------------------------------------------------
         segmented_leaf, severity_pct, severity_level = segment_and_crop_leaf(raw_image)
-        segmented_base64 = pil_to_base64(segmented_leaf)
 
-        # Stage 2: CNN Inference
+        # -------------------------------------------------------------
+        # Stage 2: MobileNetV2 CNN Inference on Segmented Leaf
+        # -------------------------------------------------------------
         processed_img = preprocess_image(segmented_leaf)
         predictions = model.predict(processed_img)[0]
         max_idx = int(np.argmax(predictions))
         predicted_class = CLASS_NAMES[max_idx]
         confidence = float(predictions[max_idx]) * 100
 
-        # Confidence Guard
+        # Fallback Guard: Confidence Threshold (Must be >= 70%)
         if confidence < 70.0:
             return jsonify({
                 "disease": "invalid",
                 "confidence": f"{confidence:.2f}%",
                 "status": "Uncertain / Unclear Leaf",
                 "severity": "Unknown",
-                "segmented_image_base64": segmented_base64,
                 "description": "The AI model is uncertain about this leaf image.",
                 "fertilizer_recommendation": "N/A - Please retake the photo with the leaf clearly in focus.",
                 "preventive_measures": [
@@ -124,25 +129,36 @@ def predict():
                 ]
             }), 200
 
+        # -------------------------------------------------------------
+        # Stage 3: Adaptive Agronomy Advice (Disease + Severity Tier)
+        # -------------------------------------------------------------
         if predicted_class.lower() == "healthy":
             severity_str = "0% (Healthy Foliage)"
+            advice = get_advice("healthy", "Healthy")
         else:
             severity_str = f"{severity_level} [~{severity_pct:.1f}% lesion area]"
+            advice = get_advice(predicted_class, severity_level)
 
-        advice = get_advice(predicted_class)
+        # Combine measures with climate guidance
+        measures = list(advice.get("preventive_measures", []))
+        if "climate_advisory" in advice:
+            measures.append("🌦️ Climate Guidance: " + advice["climate_advisory"])
 
-        return jsonify({
+        response = {
             "disease": predicted_class,
             "confidence": f"{confidence:.2f}%",
             "status": advice["status"],
             "severity": severity_str,
-            "segmented_image_base64": segmented_base64,
             "description": advice["description"],
             "fertilizer_recommendation": advice["fertilizer_recommendation"],
-            "preventive_measures": advice["preventive_measures"]
-        }), 200
+            "preventive_measures": measures
+        }
+
+        print(f"✓ Diagnosis: {predicted_class} ({confidence:.2f}%) | Severity: {severity_str}")
+        return jsonify(response), 200
 
     except Exception as e:
+        print(f"❌ Error during prediction: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
