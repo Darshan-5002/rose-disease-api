@@ -7,78 +7,109 @@ import tensorflow as tf
 from disease_advisor import get_advice
 
 app = Flask(__name__)
-CORS(app)  # Enable Cross-Origin requests
+CORS(app)
 
-# 1. Load Trained MobileNetV2 Model
+# 1. Load Trained Model
 MODEL_PATH = 'rose_model.h5'
-
-if not os.path.exists(MODEL_PATH):
-    print(f"❌ Error: '{MODEL_PATH}' not found! Please run 'python train.py' first.")
-else:
-    print(f"✓ Loading AI Model from '{MODEL_PATH}'...")
-    model = tf.keras.models.load_model(MODEL_PATH)
-    print("✓ Model loaded successfully!")
-
-# 2. Class Names (must match alphabetical order from training directory)
+model = tf.keras.models.load_model(MODEL_PATH)
 CLASS_NAMES = ['blackspot', 'healthy', 'mildew', 'rust']
 
+def is_valid_plant_image(image: Image.Image) -> bool:
+    """
+    Checks if the uploaded image actually contains plant/leaf foliage colors.
+    Rejects text banners, screenshots, graphics, and random non-plant objects.
+    """
+    # Convert image to HSV
+    img_hsv = image.convert('HSV')
+    hsv_array = np.array(img_hsv)
+    
+    h = hsv_array[:, :, 0]  # Hue (0-255 in PIL)
+    s = hsv_array[:, :, 1]  # Saturation
+    v = hsv_array[:, :, 2]  # Value / Brightness
+
+    # Plant foliage hue ranges in PIL HSV (Green, Yellow-Green, Brownish-green)
+    # Green/Yellow-Green hue roughly maps to 25 to 110 (out of 255) with decent saturation
+    plant_mask = ((h >= 20) & (h <= 115) & (s >= 30) & (v >= 30))
+    plant_pixel_ratio = np.sum(plant_mask) / (hsv_array.shape[0] * hsv_array.shape[1])
+
+    # If less than 12% of the image pixels have plant-like colors, reject it
+    return plant_pixel_ratio >= 0.12
+
 def preprocess_image(image: Image.Image):
-    """
-    Preprocess image to match MobileNetV2 input requirements (224x224, normalized 0-1).
-    """
     image = image.convert('RGB')
     image = image.resize((224, 224))
     img_array = np.array(image, dtype=np.float32) / 255.0
-    img_array = np.expand_dims(img_array, axis=0)  # Shape: (1, 224, 224, 3)
+    img_array = np.expand_dims(img_array, axis=0)
     return img_array
 
 @app.route('/', methods=['GET'])
 def home():
     return jsonify({
         "status": "Online",
-        "service": "Rose Leaf Disease Detection & Smart Advisor API",
-        "supported_classes": CLASS_NAMES
+        "service": "Rose Leaf Disease Detection & Smart Advisor API"
     })
 
 @app.route('/predict', methods=['POST'])
 def predict():
     if 'image' not in request.files:
-        return jsonify({'error': 'No image file provided with key "image"'}), 400
+        return jsonify({'error': 'No image provided'}), 400
     
     file = request.files['image']
     if file.filename == '':
-        return jsonify({'error': 'No image selected for uploading'}), 400
+        return jsonify({'error': 'Empty filename'}), 400
 
     try:
-        # Open and preprocess image
         image = Image.open(file.stream)
-        processed_img = preprocess_image(image)
 
-        # Run inference
+        # Step 1: Check if the image is actually a plant/leaf
+        if not is_valid_plant_image(image):
+            return jsonify({
+                "disease": "invalid",
+                "confidence": "0.00%",
+                "status": "Invalid / Non-Plant Image",
+                "description": "The uploaded image does not appear to contain a rose leaf or plant foliage.",
+                "fertilizer_recommendation": "N/A - Please scan an actual rose leaf.",
+                "preventive_measures": [
+                    "Take a clear, focused photo of a rose leaf.",
+                    "Avoid screenshots, documents, text, or non-plant objects.",
+                    "Ensure adequate natural lighting."
+                ]
+            }), 200
+
+        # Step 2: Run CNN Inference
+        processed_img = preprocess_image(image)
         predictions = model.predict(processed_img)[0]
         max_idx = int(np.argmax(predictions))
         predicted_class = CLASS_NAMES[max_idx]
         confidence = float(predictions[max_idx]) * 100
 
-        # Retrieve smart agronomy advice
-        advice = get_advice(predicted_class)
+        # Step 3: Confidence threshold check (must be at least 80% confident)
+        if confidence < 80.0:
+            return jsonify({
+                "disease": "invalid",
+                "confidence": f"{confidence:.2f}%",
+                "status": "Uncertain / Unclear Leaf",
+                "description": "The model could not identify the disease with sufficient confidence.",
+                "fertilizer_recommendation": "N/A - Please retake the photo with better focus.",
+                "preventive_measures": [
+                    "Ensure the leaf fills most of the camera viewfinder.",
+                    "Avoid blurry or extreme close-up angles."
+                ]
+            }), 200
 
-        response = {
+        # Step 4: Return Valid Disease & Treatment
+        advice = get_advice(predicted_class)
+        return jsonify({
             "disease": predicted_class,
             "confidence": f"{confidence:.2f}%",
             "status": advice["status"],
             "description": advice["description"],
             "fertilizer_recommendation": advice["fertilizer_recommendation"],
             "preventive_measures": advice["preventive_measures"]
-        }
-        
-        print(f"✓ Prediction: {predicted_class} ({confidence:.2f}%)")
-        return jsonify(response), 200
+        }), 200
 
     except Exception as e:
-        print(f"❌ Error during prediction: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    # Run on 0.0.0.0:5000 so the Android Emulator and physical devices can access it
     app.run(host='0.0.0.0', port=5000, debug=True)
