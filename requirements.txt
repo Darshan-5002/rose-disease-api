@@ -5,5 +5,4 @@ pillow>=9.5.0
 numpy>=1.23.5
 werkzeug>=2.3.0
 gunicorn>=21.2.0
-matplotlib>=3.7.1
-
+opencv-python-headless>=4.7.0.72
