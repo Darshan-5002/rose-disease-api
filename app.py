@@ -1,6 +1,4 @@
 import os
-import io
-import base64
 import cv2
 import numpy as np
 from flask import Flask, request, jsonify
@@ -9,9 +7,13 @@ from PIL import Image
 import tensorflow as tf
 from disease_advisor import get_advice
 from leaf_segmentation import segment_and_crop_leaf
+from history_db import init_db, analyze_progression_and_save
 
 app = Flask(__name__)
 CORS(app)
+
+# Initialize SQLite Database Table
+init_db()
 
 # 1. Load Trained MobileNetV2 Model
 MODEL_PATH = 'rose_model.h5'
@@ -24,27 +26,23 @@ else:
 CLASS_NAMES = ['blackspot', 'healthy', 'mildew', 'rust']
 
 def check_image_quality(image: Image.Image):
-    """
-    Feature 1: Image Quality Assessment
-    Checks for blur, extreme darkness/brightness, and plant foliage presence.
-    """
     open_cv_image = np.array(image.convert('RGB'))
     img_bgr = cv2.cvtColor(open_cv_image, cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
 
-    # 1. Blur Detection
+    # Blur Detection
     laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
     if laplacian_var < 20.0:
         return False, "Image is too blurry. Please hold camera steady."
 
-    # 2. Brightness Check
+    # Brightness Check
     mean_brightness = np.mean(gray)
     if mean_brightness < 30:
         return False, "Image is too dark. Please take photo in good lighting."
     if mean_brightness > 235:
         return False, "Image is overexposed/too bright."
 
-    # 3. Plant Foliage Check in HSV
+    # Plant Foliage Check in HSV
     hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
     plant_mask = ((hsv[:, :, 0] >= 15) & (hsv[:, :, 0] <= 115) & (hsv[:, :, 1] >= 25) & (hsv[:, :, 2] >= 25))
     plant_ratio = np.sum(plant_mask) / (hsv.shape[0] * hsv.shape[1])
@@ -65,8 +63,14 @@ def preprocess_image(image: Image.Image):
 def home():
     return jsonify({
         "status": "Online",
-        "service": "Adaptive Rose Disease Detection & Smart Advisor API",
-        "version": "2.0 (Severity-Adaptive + Leaf Segmentation)"
+        "service": "Adaptive Rose Disease Detection & Progression Tracker API",
+        "features": [
+            "Image Quality Assessment",
+            "Automatic Leaf Segmentation",
+            "Two-Stage AI Inference",
+            "Disease Severity Estimation",
+            "Temporal Progression & Recovery Tracker (SQLite)"
+        ]
     })
 
 @app.route('/predict', methods=['POST'])
@@ -78,12 +82,13 @@ def predict():
     if file.filename == '':
         return jsonify({'error': 'Empty filename'}), 400
 
+    # Optional plant ID (defaults to 'rose_bush_1' if not provided)
+    plant_id = request.form.get('plant_id', 'rose_bush_1')
+
     try:
         raw_image = Image.open(file.stream)
 
-        # -------------------------------------------------------------
-        # Stage 0: Image Quality Check (Blur, Darkness, Non-Plant)
-        # -------------------------------------------------------------
+        # Stage 0: Quality Check
         is_quality_good, quality_msg = check_image_quality(raw_image)
         if not is_quality_good:
             return jsonify({
@@ -91,6 +96,7 @@ def predict():
                 "confidence": "0.00%",
                 "status": "Image Quality Warning",
                 "severity": "N/A",
+                "progression_trend": "N/A",
                 "description": quality_msg,
                 "fertilizer_recommendation": "N/A - Please recapture with better lighting and focus.",
                 "preventive_measures": [
@@ -100,27 +106,24 @@ def predict():
                 ]
             }), 200
 
-        # -------------------------------------------------------------
-        # Stage 1: Automatic Leaf Segmentation & Severity Area Calc
-        # -------------------------------------------------------------
+        # Stage 1: Leaf Segmentation & Severity Area Calc
         segmented_leaf, severity_pct, severity_level = segment_and_crop_leaf(raw_image)
 
-        # -------------------------------------------------------------
-        # Stage 2: MobileNetV2 CNN Inference on Segmented Leaf
-        # -------------------------------------------------------------
+        # Stage 2: MobileNetV2 CNN Inference
         processed_img = preprocess_image(segmented_leaf)
         predictions = model.predict(processed_img)[0]
         max_idx = int(np.argmax(predictions))
         predicted_class = CLASS_NAMES[max_idx]
         confidence = float(predictions[max_idx]) * 100
 
-        # Fallback Guard: Confidence Threshold (Must be >= 70%)
+        # Confidence Fallback
         if confidence < 70.0:
             return jsonify({
                 "disease": "invalid",
                 "confidence": f"{confidence:.2f}%",
                 "status": "Uncertain / Unclear Leaf",
                 "severity": "Unknown",
+                "progression_trend": "N/A",
                 "description": "The AI model is uncertain about this leaf image.",
                 "fertilizer_recommendation": "N/A - Please retake the photo with the leaf clearly in focus.",
                 "preventive_measures": [
@@ -129,18 +132,28 @@ def predict():
                 ]
             }), 200
 
-        # -------------------------------------------------------------
-        # Stage 3: Adaptive Agronomy Advice (Disease + Severity Tier)
-        # -------------------------------------------------------------
+        # Severity Formatter
         if predicted_class.lower() == "healthy":
             severity_str = "0% (Healthy Foliage)"
+            severity_num = 0.0
             advice = get_advice("healthy", "Healthy")
         else:
             severity_str = f"{severity_level} [~{severity_pct:.1f}% lesion area]"
+            severity_num = severity_pct
             advice = get_advice(predicted_class, severity_level)
 
-        # Combine measures with climate guidance
-        measures = list(advice.get("preventive_measures", []))
+        # Stage 3: Temporal Disease Progression Tracking (SQLite)
+        trend, trend_feedback = analyze_progression_and_save(
+            plant_id=plant_id,
+            current_disease=predicted_class,
+            confidence_val=confidence,
+            current_severity_pct=severity_num,
+            severity_level=severity_level
+        )
+
+        # Combine measures with progression feedback and climate guidance
+        measures = [f"📈 Treatment Response: {trend_feedback}"]
+        measures.extend(advice.get("preventive_measures", []))
         if "climate_advisory" in advice:
             measures.append("🌦️ Climate Guidance: " + advice["climate_advisory"])
 
@@ -149,16 +162,17 @@ def predict():
             "confidence": f"{confidence:.2f}%",
             "status": advice["status"],
             "severity": severity_str,
+            "progression_trend": trend,
             "description": advice["description"],
             "fertilizer_recommendation": advice["fertilizer_recommendation"],
             "preventive_measures": measures
         }
 
-        print(f"✓ Diagnosis: {predicted_class} ({confidence:.2f}%) | Severity: {severity_str}")
+        print(f"✓ Diagnosis: {predicted_class} ({confidence:.2f}%) | Trend: {trend}")
         return jsonify(response), 200
 
     except Exception as e:
-        print(f"❌ Error during prediction: {e}")
+        print(f"❌ Error: {e}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
