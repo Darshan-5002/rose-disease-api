@@ -7,7 +7,6 @@ from PIL import Image
 import tensorflow as tf
 from disease_advisor import get_advice
 from leaf_segmentation import segment_and_crop_leaf
-from history_db import init_db, analyze_progression_and_save
 from history_db import init_db, analyze_progression_and_save, get_all_scans
 
 app = Flask(__name__)
@@ -78,7 +77,7 @@ def home():
 def predict():
     if 'image' not in request.files:
         return jsonify({'error': 'No image provided'}), 400
-    
+
     file = request.files['image']
     if file.filename == '':
         return jsonify({'error': 'Empty filename'}), 400
@@ -176,9 +175,6 @@ def predict():
         print(f"❌ Error: {e}")
         return jsonify({'error': str(e)}), 500
 
-  
-
-# Add this endpoint in app.py:
 @app.route('/history', methods=['GET'])
 def get_history():
     plant_id = request.args.get('plant_id', 'rose_bush_1')
