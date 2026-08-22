@@ -177,3 +177,12 @@ def predict():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+from history_db import init_db, analyze_progression_and_save, get_all_scans
+
+# Add this endpoint in app.py:
+@app.route('/history', methods=['GET'])
+def get_history():
+    plant_id = request.args.get('plant_id', 'rose_bush_1')
+    records = get_all_scans(plant_id)
+    return jsonify(records), 200
