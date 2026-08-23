@@ -5,3 +5,6 @@ dataset/
 raw_dataset/
 training_performance.png
 confusion_matrix.png
+rose_scans.db
+*.db
+

@@ -108,11 +108,11 @@ def predict():
                 ]
             }), 200
 
-        # Stage 1: Leaf Segmentation & Severity Area Calc
-        segmented_leaf, severity_pct, severity_level = segment_and_crop_leaf(raw_image)
+        # Stage 1: Leaf Segmentation for CNN
+        _, cnn_leaf, _, _ = segment_and_crop_leaf(raw_image)
 
         # Stage 2: MobileNetV2 CNN Inference
-        processed_img = preprocess_image(segmented_leaf)
+        processed_img = preprocess_image(cnn_leaf)
         predictions = model.predict(processed_img)[0]
         max_idx = int(np.argmax(predictions))
         predicted_class = CLASS_NAMES[max_idx]
@@ -133,6 +133,9 @@ def predict():
                     "Avoid capturing background clutter, multiple leaves, or fingers."
                 ]
             }), 200
+
+        # Stage 2.5: Disease-Specific Visual Lesion Segmentation
+        visual_leaf, _, severity_pct, severity_level = segment_and_crop_leaf(raw_image, disease_hint=predicted_class)
 
         # Severity Formatter
         if predicted_class.lower() == "healthy":
@@ -159,9 +162,9 @@ def predict():
         if "climate_advisory" in advice:
             measures.append("🌦️ Climate Guidance: " + advice["climate_advisory"])
 
-        # Encode segmented leaf image as base64 for the app
+        # Encode visual segmented/highlighted leaf image as base64 for the app
         seg_buffer = io.BytesIO()
-        segmented_leaf.save(seg_buffer, format='JPEG', quality=80)
+        visual_leaf.save(seg_buffer, format='JPEG', quality=85)
         seg_base64 = base64.b64encode(seg_buffer.getvalue()).decode('utf-8')
 
         response = {
@@ -176,7 +179,7 @@ def predict():
             "segmented_image": seg_base64
         }
 
-        print(f"✓ Diagnosis: {predicted_class} ({confidence:.2f}%) | Trend: {trend}")
+        print(f"✓ Diagnosis: {predicted_class} ({confidence:.2f}%) | Trend: {trend} | Severity: {severity_str}")
         return jsonify(response), 200
 
     except Exception as e:
