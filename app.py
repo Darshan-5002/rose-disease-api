@@ -1,5 +1,7 @@
 import os
 import cv2
+import base64
+import io
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -157,6 +159,11 @@ def predict():
         if "climate_advisory" in advice:
             measures.append("🌦️ Climate Guidance: " + advice["climate_advisory"])
 
+        # Encode segmented leaf image as base64 for the app
+        seg_buffer = io.BytesIO()
+        segmented_leaf.save(seg_buffer, format='JPEG', quality=80)
+        seg_base64 = base64.b64encode(seg_buffer.getvalue()).decode('utf-8')
+
         response = {
             "disease": predicted_class,
             "confidence": f"{confidence:.2f}%",
@@ -165,7 +172,8 @@ def predict():
             "progression_trend": trend,
             "description": advice["description"],
             "fertilizer_recommendation": advice["fertilizer_recommendation"],
-            "preventive_measures": measures
+            "preventive_measures": measures,
+            "segmented_image": seg_base64
         }
 
         print(f"✓ Diagnosis: {predicted_class} ({confidence:.2f}%) | Trend: {trend}")

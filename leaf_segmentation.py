@@ -47,28 +47,46 @@ def segment_and_crop_leaf(pil_image: Image.Image):
     segmented_bgr = cv2.bitwise_and(img_bgr, img_bgr, mask=clean_leaf_mask)
 
     # 7. Disease Lesion / Severity Calculation
-    # Healthy rose leaf pixels are typically vivid green
-    # Diseased regions (black spots, white mildew, rust orange) deviate from healthy green
-    lower_healthy = np.array([35, 40, 40])
-    upper_healthy = np.array([85, 255, 255])
-    healthy_mask = cv2.inRange(hsv, lower_healthy, upper_healthy)
-    healthy_leaf_mask = cv2.bitwise_and(healthy_mask, clean_leaf_mask)
+    # Instead of counting everything non-green as diseased (which over-counts),
+    # we specifically detect disease color signatures within the leaf area.
 
     total_leaf_pixels = cv2.countNonZero(clean_leaf_mask)
-    healthy_pixels = cv2.countNonZero(healthy_leaf_mask)
-    diseased_pixels = max(0, total_leaf_pixels - healthy_pixels)
+
+    # --- Detect specific disease markers ---
+    # Black Spot: very dark regions on the leaf (low value in HSV)
+    blackspot_mask = cv2.inRange(hsv, np.array([0, 0, 0]), np.array([180, 255, 70]))
+    blackspot_on_leaf = cv2.bitwise_and(blackspot_mask, clean_leaf_mask)
+
+    # Powdery Mildew: white/grayish powdery patches (low saturation, high value)
+    mildew_mask = cv2.inRange(hsv, np.array([0, 0, 170]), np.array([180, 50, 255]))
+    mildew_on_leaf = cv2.bitwise_and(mildew_mask, clean_leaf_mask)
+
+    # Rust: orange/yellow-brown pustules
+    rust_mask = cv2.inRange(hsv, np.array([5, 80, 80]), np.array([25, 255, 255]))
+    rust_on_leaf = cv2.bitwise_and(rust_mask, clean_leaf_mask)
+
+    # Yellowing / Chlorosis: yellow areas indicating stress
+    yellow_mask = cv2.inRange(hsv, np.array([20, 60, 100]), np.array([35, 255, 255]))
+    yellow_on_leaf = cv2.bitwise_and(yellow_mask, clean_leaf_mask)
+
+    # Combine all disease masks (avoid double-counting with bitwise OR)
+    combined_disease = cv2.bitwise_or(blackspot_on_leaf, mildew_on_leaf)
+    combined_disease = cv2.bitwise_or(combined_disease, rust_on_leaf)
+    combined_disease = cv2.bitwise_or(combined_disease, yellow_on_leaf)
+
+    diseased_pixels = cv2.countNonZero(combined_disease)
 
     severity_percentage = 0.0
     if total_leaf_pixels > 0:
-        severity_percentage = (diseased_pixels / total_leaf_pixels) * 100.0
+        severity_percentage = round((diseased_pixels / total_leaf_pixels) * 100.0, 1)
 
     # Categorize severity
     if severity_percentage < 15.0:
-        severity_level = "Mild (<15% infected area)"
+        severity_level = "Mild"
     elif severity_percentage < 40.0:
-        severity_level = "Moderate (15-40% infected area)"
+        severity_level = "Moderate"
     else:
-        severity_level = "Severe (>40% infected area)"
+        severity_level = "Severe"
 
     # Convert back to PIL image for CNN input
     segmented_rgb = cv2.cvtColor(segmented_bgr, cv2.COLOR_BGR2RGB)
