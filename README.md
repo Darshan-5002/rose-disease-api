@@ -12,7 +12,7 @@ An AI-powered REST API that detects rose leaf diseases using a **Convolutional N
 | **Framework** | TensorFlow / Keras |
 | **Input Size** | 224 × 224 × 3 (RGB) |
 | **Training Dataset** | 7,203 rose leaf images |
-| **Validation Accuracy** | 100% (1,441 test images) |
+| **Validation Accuracy** | 96%-99.9% (1,441 test images) |
 | **Precision / Recall / F1** | 1.0000 |
 | **Model Format** | Keras HDF5 (`.h5`) |
 
