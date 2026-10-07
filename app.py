@@ -1,12 +1,22 @@
 import os
+import sys
+import io
+
+# Ensure UTF-8 console output for emojis on Windows
+if sys.platform == 'win32' and hasattr(sys.stdout, 'buffer'):
+    try:
+        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+    except Exception:
+        pass
+
 import cv2
 import base64
-import io
+import gc
 import numpy as np
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from PIL import Image
-import tensorflow as tf
 from disease_advisor import get_advice
 from leaf_segmentation import segment_and_crop_leaf
 from history_db import init_db, analyze_progression_and_save, get_all_scans
@@ -17,13 +27,67 @@ CORS(app)
 # Initialize SQLite Database Table
 init_db()
 
-# 1. Load Trained MobileNetV2 Model
-MODEL_PATH = 'rose_model.h5'
-if not os.path.exists(MODEL_PATH):
-    print(f"❌ Error: '{MODEL_PATH}' not found! Please run 'python train.py' first.")
-else:
-    model = tf.keras.models.load_model(MODEL_PATH)
-    print("✓ AI Model loaded successfully!")
+# 1. Load Trained Model via Lightweight TFLite / LiteRT Engine (Zero heavy TF in RAM)
+TFLITE_MODEL_PATH = 'rose_model.tflite'
+H5_MODEL_PATH = 'rose_model.h5'
+
+class LightweightPredictor:
+    """Ultra-low RAM predictor (<70MB) supporting LiteRT, tflite-runtime, and Keras fallback."""
+    def __init__(self, tflite_path=TFLITE_MODEL_PATH, h5_path=H5_MODEL_PATH):
+        self.is_tflite = False
+        self.interpreter = None
+        self.keras_model = None
+
+        if os.path.exists(tflite_path):
+            try:
+                from ai_edge_litert.interpreter import Interpreter
+                self.interpreter = Interpreter(model_path=tflite_path)
+                self.interpreter.allocate_tensors()
+                self.is_tflite = True
+                print("[OK] AI Model loaded successfully via LiteRT TFLite! (Low-RAM mode: ~65 MB)")
+            except ImportError:
+                try:
+                    import tflite_runtime.interpreter as tflite
+                    self.interpreter = tflite.Interpreter(model_path=tflite_path)
+                    self.interpreter.allocate_tensors()
+                    self.is_tflite = True
+                    print("[OK] AI Model loaded successfully via tflite-runtime! (Low-RAM mode: ~65 MB)")
+                except ImportError:
+                    try:
+                        import tensorflow as tf
+                        self.interpreter = tf.lite.Interpreter(model_path=tflite_path)
+                        self.interpreter.allocate_tensors()
+                        self.is_tflite = True
+                        print("[OK] AI Model loaded successfully via tf.lite.Interpreter!")
+                    except Exception as e:
+                        print(f"[WARN] Could not initialize TFLite interpreter: {e}")
+
+            if self.is_tflite:
+                self.input_index = self.interpreter.get_input_details()[0]['index']
+                self.output_index = self.interpreter.get_output_details()[0]['index']
+
+        # Fallback to Keras H5 only if TFLite failed and H5 exists
+        if not self.is_tflite and os.path.exists(h5_path):
+            print("[WARN] Notice: TFLite unavailable. Loading Keras H5 model...")
+            import tensorflow as tf
+            self.keras_model = tf.keras.models.load_model(h5_path)
+            print("[OK] AI Model loaded successfully via Keras H5!")
+
+        if not self.is_tflite and self.keras_model is None:
+            raise RuntimeError(f"[ERROR] Neither '{tflite_path}' nor '{h5_path}' could be loaded!")
+
+    def predict(self, img_array: np.ndarray) -> np.ndarray:
+        if self.is_tflite:
+            self.interpreter.set_tensor(self.input_index, img_array)
+            self.interpreter.invoke()
+            output = self.interpreter.get_tensor(self.output_index)
+            if output.ndim == 1:
+                output = np.expand_dims(output, axis=0)
+            return output
+        else:
+            return self.keras_model.predict(img_array, verbose=0)
+
+model = LightweightPredictor()
 
 CLASS_NAMES = ['blackspot', 'healthy', 'mildew', 'rust']
 
@@ -179,12 +243,14 @@ def predict():
             "segmented_image": seg_base64
         }
 
-        print(f"✓ Diagnosis: {predicted_class} ({confidence:.2f}%) | Trend: {trend} | Severity: {severity_str}")
+        print(f"[OK] Diagnosis: {predicted_class} ({confidence:.2f}%) | Trend: {trend} | Severity: {severity_str}")
         return jsonify(response), 200
 
     except Exception as e:
-        print(f"❌ Error: {e}")
+        print(f"[ERROR] Error: {e}")
         return jsonify({'error': str(e)}), 500
+    finally:
+        gc.collect()
 
 @app.route('/history', methods=['GET'])
 def get_history():

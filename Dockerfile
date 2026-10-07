@@ -19,5 +19,5 @@ COPY . .
 # Expose port 5000
 EXPOSE 5000
 
-# Start Flask with Gunicorn
-CMD ["gunicorn", "app:app", "--bind", "0.0.0.0:5000", "--timeout", "120"]
+# Start Flask with Gunicorn (1 worker + 2 threads for low memory usage)
+CMD ["gunicorn", "app:app", "--workers", "1", "--threads", "2", "--bind", "0.0.0.0:5000", "--timeout", "120"]

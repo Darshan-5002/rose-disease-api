@@ -2,7 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 import tensorflow as tf
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+ImageDataGenerator = tf.keras.preprocessing.image.ImageDataGenerator
+
 from sklearn.metrics import classification_report, confusion_matrix
 
 # 1. Load Validation Data

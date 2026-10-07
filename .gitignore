@@ -7,4 +7,6 @@ training_performance.png
 confusion_matrix.png
 rose_scans.db
 *.db
+rahat_dataset/
+rahat_benchmark_confusion_matrix.png
 
