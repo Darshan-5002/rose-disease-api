@@ -12,7 +12,7 @@ from tensorflow.keras.callbacks import EarlyStopping, ModelCheckpoint
 IMG_SIZE = (224, 224)
 BATCH_SIZE = 32
 EPOCHS = 15
-TRAIN_DIR = 'dataset/train'
+TRAIN_DIR = 'dataset/train'        
 VAL_DIR = 'dataset/validation'
 
 print("Setting up Data Generators...")

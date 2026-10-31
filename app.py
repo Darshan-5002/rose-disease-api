@@ -3,10 +3,12 @@ import sys
 import io
 
 # Ensure UTF-8 console output for emojis on Windows
-if sys.platform == 'win32' and hasattr(sys.stdout, 'buffer'):
+if sys.platform == 'win32':
     try:
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
+        if hasattr(sys.stdout, 'reconfigure'):
+            sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+        if hasattr(sys.stderr, 'reconfigure'):
+            sys.stderr.reconfigure(encoding='utf-8', errors='replace')
     except Exception:
         pass
 
